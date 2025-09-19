@@ -1,0 +1,22 @@
+[package]
+name = "sinewave-tinnitus-retraining-audio-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+cpal = { version = "0.16", default-features = false }
+rand = { version = "0.9.2", default-features = false }
+log = { version = "0.4.28" }
+libloading = "0.8.9"
+rand_core = "0.9.3"
+
+
+
+
+[target.aarch64-linux-android]
+# linker = "aarch64-linux-android26-clang"
+# rustflags = ["-Clink-arg=-llog", "-Clink-arg=-lc++_shared", "-Clink-arg=-L/opt/homebrew/share/android-commandlinetools/ndk/27.2.12479018/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android/26/", "-Clink-arg=-laaudio"]
+rustflags = ["-Clink-arg=-llog", "-Clink-arg=-lc++_shared"]

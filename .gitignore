@@ -1,0 +1,19 @@
+target/*
+android-ndk.dmg
+flutter.zip
+tonal_tinnitus_ui/build/
+tonal_tinnitus_ui/.flutter-plugins
+tonal_tinnitus_ui/.flutter-plugins-dependencies
+tonal_tinnitus_ui/android/.gradle/
+tonal_tinnitus_ui/android/app/build/
+tonal_tinnitus_ui/android/app/src/main/jniLibs/
+.cargo/
+
+# Aider-specific files
+.aider.*
+
+# IDE-specific files
+.idea/
+
+# Compiled libraries
+*.a

@@ -1,0 +1,8 @@
+#include "../../Flutter/Flutter-Debug.xcconfig"
+#include "Warnings.xcconfig"
+
+// Add the directory containing our static library to the library search paths.
+LIBRARY_SEARCH_PATHS = $(inherited) $(PROJECT_DIR)
+
+// Link our Rust static library.
+OTHER_LDFLAGS = $(inherited) -ltonal_tinnitus_app -Wl,-u,_create_audio_player -Wl,-u,_start_audio_player -Wl,-u,_stop_audio_player -Wl,-u,_destroy_audio_player -Wl,-u,_set_gain_db -framework CoreAudio -framework AudioToolbox -framework CoreFoundation

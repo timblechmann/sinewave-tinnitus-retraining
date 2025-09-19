@@ -1,0 +1,3 @@
+edition = "2024"
+# enum_discrim_align_threshold = 20
+# force_multiline_blocks = true
