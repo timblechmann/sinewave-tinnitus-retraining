@@ -14,13 +14,44 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import org.klingt.tim.sinewaveTinnitusRetraining.R
 
-class AudioPlaybackService :
-    Service(),
-    AudioManager.OnAudioFocusChangeListener {
+class AudioPlaybackService : Service() {
     private val binder = LocalBinder()
     private var audioManager: AudioManager? = null
     private var isPlaying = false
     private var isInitialized = false
+
+    interface AudioServiceListener {
+        fun onHeadphoneConnectionChanged(isConnected: Boolean)
+
+        fun onPlaybackStateChanged(isPlaying: Boolean)
+    }
+
+    private var listener: AudioServiceListener? = null
+
+    fun setListener(listener: AudioServiceListener?) {
+        this.listener = listener
+    }
+
+    private val audioDeviceCallback =
+        object : android.media.AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>?) {
+                super.onAudioDevicesAdded(addedDevices)
+                val connected = isHeadphoneConnected()
+                listener?.onHeadphoneConnectionChanged(connected)
+                if (connected && !isPlaying) {
+                    startAudioPlayback()
+                }
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>?) {
+                super.onAudioDevicesRemoved(removedDevices)
+                val connected = isHeadphoneConnected()
+                listener?.onHeadphoneConnectionChanged(connected)
+                if (!connected && isPlaying) {
+                    stopAudioPlayback()
+                }
+            }
+        }
 
     companion object {
         const val NOTIFICATION_ID = 1
@@ -44,6 +75,7 @@ class AudioPlaybackService :
         super.onCreate()
         createNotificationChannel()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager?.registerAudioDeviceCallback(audioDeviceCallback, null)
         initializeAudioPlayer()
     }
 
@@ -58,25 +90,32 @@ class AudioPlaybackService :
             ACTION_START -> {
                 startAudioPlayback()
             }
+
             ACTION_STOP -> {
                 stopAudioPlayback()
             }
+
             ACTION_PAUSE -> {
                 pauseAudioPlayback()
             }
+
             ACTION_RESUME -> {
                 resumeAudioPlayback()
             }
+
             ACTION_SET_GAIN -> {
                 val gain = intent.getFloatExtra("gain", 0.0f)
                 setGainValue(gain)
             }
+
             ACTION_SET_FREQUENCY_RANGE -> {
                 val minMidiNote = intent.getFloatExtra("minMidiNote", 69.0f)
                 val maxMidiNote = intent.getFloatExtra("maxMidiNote", 115.0f)
                 setFrequencyRangeValue(minMidiNote, maxMidiNote)
             }
         }
+        // Ensure the service stays running
+        startForeground(NOTIFICATION_ID, createNotification())
         return START_STICKY
     }
 
@@ -146,39 +185,53 @@ class AudioPlaybackService :
         }
     }
 
+    fun isHeadphoneConnected(): Boolean {
+        // AudioManager.GET_DEVICES_OUTPUT is 2
+        val devices = audioManager?.getDevices(2) ?: return false
+        for (device in devices) {
+            val type = device.type
+            if (type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun startAudioPlayback() {
         if (!isInitialized) {
             Log.e(TAG, "Audio player not initialized")
             return
         }
 
-        // Request audio focus
-        val result =
-            audioManager?.requestAudioFocus(
-                this,
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN,
-            )
+        if (!isHeadphoneConnected()) {
+            Log.d(TAG, "No headphones connected, skipping playback start")
+            // Update notification to indicate waiting for headphones
+            startForeground(NOTIFICATION_ID, createNotification())
+            return
+        }
 
-        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-            try {
-                val status = start_audio_player()
-                if (status == 1) {
-                    isPlaying = true
-                    startForeground(NOTIFICATION_ID, createNotification())
-                    Log.d(TAG, "Audio playback started")
-                } else {
-                    Log.e(TAG, "Failed to start audio playback")
-                }
-            } catch (e: UnsatisfiedLinkError) {
-                Log.w(TAG, "Native audio functions not available, service running in background mode only")
+        // We do NOT request audio focus to allow mixing with other apps
+        try {
+            val status = start_audio_player()
+            if (status == 1) {
                 isPlaying = true
+                listener?.onPlaybackStateChanged(true)
                 startForeground(NOTIFICATION_ID, createNotification())
-            } catch (e: Exception) {
-                Log.e(TAG, "Error starting audio playback", e)
+                Log.d(TAG, "Audio playback started")
+            } else {
+                Log.e(TAG, "Failed to start audio playback")
             }
-        } else {
-            Log.e(TAG, "Failed to get audio focus")
+        } catch (e: UnsatisfiedLinkError) {
+            Log.w(TAG, "Native audio functions not available, service running in background mode only")
+            isPlaying = true
+            listener?.onPlaybackStateChanged(true)
+            startForeground(NOTIFICATION_ID, createNotification())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting audio playback", e)
         }
     }
 
@@ -197,12 +250,9 @@ class AudioPlaybackService :
         }
 
         isPlaying = false
-
-        // Abandon audio focus
-        audioManager?.abandonAudioFocus(this)
-
-        stopForeground(true)
-        stopSelf()
+        listener?.onPlaybackStateChanged(false)
+        // Update notification to show paused state, but keep service running
+        startForeground(NOTIFICATION_ID, createNotification())
     }
 
     private fun pauseAudioPlayback() {
@@ -219,10 +269,16 @@ class AudioPlaybackService :
             }
         }
         isPlaying = false
+        listener?.onPlaybackStateChanged(false)
+        startForeground(NOTIFICATION_ID, createNotification())
     }
 
     private fun resumeAudioPlayback() {
         if (isInitialized && !isPlaying) {
+            if (!isHeadphoneConnected()) {
+                Log.d(TAG, "Cannot resume: No headphones connected")
+                return
+            }
             try {
                 val status = start_audio_player()
                 if (status == 1) {
@@ -235,30 +291,8 @@ class AudioPlaybackService :
             }
         }
         isPlaying = true
-    }
-
-    override fun onAudioFocusChange(focusChange: Int) {
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                // Permanent loss of audio focus
-                // stopAudioPlayback()
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                // Temporary loss of audio focus
-                // pauseAudioPlayback()
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                // Lower the volume
-                // For now, we'll pause since our audio needs to be at full volume
-                // pauseAudioPlayback()
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                // Regained audio focus
-                if (!isPlaying) {
-                    resumeAudioPlayback()
-                }
-            }
-        }
+        listener?.onPlaybackStateChanged(true)
+        startForeground(NOTIFICATION_ID, createNotification())
     }
 
     private fun createNotificationChannel() {
@@ -271,14 +305,24 @@ class AudioPlaybackService :
         }
     }
 
-    private fun createNotification(): Notification =
-        NotificationCompat
+    private fun createNotification(): Notification {
+        val text =
+            if (isPlaying) {
+                "Playing therapy sound"
+            } else if (!isHeadphoneConnected()) {
+                "Waiting for headphones..."
+            } else {
+                "Paused"
+            }
+
+        return NotificationCompat
             .Builder(this, CHANNEL_ID)
             .setContentTitle("Sinewave Tinnitus Retraining")
-            .setContentText(if (isPlaying) "Playing therapy sound" else "Paused")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setOngoing(isPlaying)
+            .setOngoing(true) // Always ongoing to keep service alive
             .build()
+    }
 
     override fun onDestroy() {
         super.onDestroy()
@@ -294,6 +338,7 @@ class AudioPlaybackService :
                 Log.e(TAG, "Error destroying audio player", e)
             }
         }
-        audioManager?.abandonAudioFocus(this)
+        audioManager?.unregisterAudioDeviceCallback(audioDeviceCallback)
+        listener = null
     }
 }

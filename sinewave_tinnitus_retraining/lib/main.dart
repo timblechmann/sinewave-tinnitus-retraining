@@ -96,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final SettingsService _settingsService;
 
   bool _isPlaying = false;
+  bool _isHeadphoneConnected = false;
   double _gainDb = -12.0;
   double _minMidiNote = 69.0; // A4 = 440 Hz
   double _maxMidiNote = 115.0; // Around 8000 Hz
@@ -140,11 +141,26 @@ class _HomeScreenState extends State<HomeScreen> {
           await _loadSettings();
           await _audioService.init();
           await _getInitialPlaybackState();
+          _setupAudioServiceListeners();
         } catch (e) {
           _showErrorSnackBar('Audio service initialization failed: $e');
         }
       });
     }
+  }
+
+  void _setupAudioServiceListeners() {
+    _audioService.onHeadphoneConnectionChanged.listen((isConnected) {
+      setState(() {
+        _isHeadphoneConnected = isConnected;
+      });
+    });
+
+    _audioService.onPlaybackStateChanged.listen((isPlaying) {
+      setState(() {
+        _isPlaying = isPlaying;
+      });
+    });
   }
 
   void _onWindowClose() {
@@ -187,8 +203,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _getInitialPlaybackState() async {
     final isPlaying = await _audioService.isPlaying();
+    final isHeadphoneConnected = await _audioService.isHeadphoneConnected();
     setState(() {
       _isPlaying = isPlaying;
+      _isHeadphoneConnected = isHeadphoneConnected;
     });
   }
 
@@ -268,16 +286,16 @@ class _HomeScreenState extends State<HomeScreen> {
               Theme.of(context).colorScheme.primary,
           disabledInactiveTrackColor:
               SliderTheme.of(context).inactiveTrackColor ??
-              Theme.of(context).colorScheme.onSurface.withOpacity(0.38),
+              Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.38),
           disabledActiveTickMarkColor:
               SliderTheme.of(context).activeTickMarkColor ??
               Theme.of(context).colorScheme.primary,
           disabledInactiveTickMarkColor:
               SliderTheme.of(context).inactiveTickMarkColor ??
-              Theme.of(context).colorScheme.onSurface.withOpacity(0.38),
+              Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.38),
           disabledSecondaryActiveTrackColor:
               SliderTheme.of(context).secondaryActiveTrackColor ??
-              Theme.of(context).colorScheme.primary.withOpacity(0.54),
+              Theme.of(context).colorScheme.primary.withValues(alpha: 0.54),
         ),
         child: Slider(
           value: value,
@@ -293,9 +311,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _startTherapy() async {
     try {
       await _audioService.start();
-      setState(() {
-        _isPlaying = true;
-      });
+      // State update will come from listener
     } catch (e) {
       _showErrorSnackBar('Failed to start therapy: $e');
     }
@@ -304,9 +320,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _stopTherapy() async {
     try {
       await _audioService.stop();
-      setState(() {
-        _isPlaying = false;
-      });
+      // State update will come from listener
     } catch (e) {
       _showErrorSnackBar('Failed to stop therapy: $e');
     }
@@ -328,6 +342,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   List<Widget> get buildContent {
+    String statusText;
+    Color statusColor;
+
+    if (_isPlaying) {
+      statusText = 'Therapy is playing';
+      statusColor = Colors.green;
+    } else if (!_isHeadphoneConnected) {
+      statusText = 'Waiting for headphones...';
+      statusColor = Colors.orange;
+    } else {
+      statusText = 'Therapy is stopped';
+      statusColor = Colors.red;
+    }
+
     return [
       Center(
         child: Text(
@@ -356,6 +384,24 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
       const SizedBox(height: 20),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            _isHeadphoneConnected ? Icons.headset : Icons.headset_off,
+            color: _isHeadphoneConnected ? Colors.green : Colors.grey,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            _isHeadphoneConnected ? 'Headphones Connected' : 'No Headphones',
+            style: TextStyle(
+              color: _isHeadphoneConnected ? Colors.green : Colors.grey,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 20),
       ElevatedButton(
         onPressed: _isPlaying ? _stopTherapy : _startTherapy,
         style: ElevatedButton.styleFrom(enableFeedback: false),
@@ -363,11 +409,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       const SizedBox(height: 20),
       Text(
-        _isPlaying ? 'Therapy is playing in background' : 'Therapy is stopped',
-        style: TextStyle(
-          color: _isPlaying ? Colors.green : Colors.red,
-          fontWeight: FontWeight.bold,
-        ),
+        statusText,
+        style: TextStyle(color: statusColor, fontWeight: FontWeight.bold),
       ),
     ];
   }

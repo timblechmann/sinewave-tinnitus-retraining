@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -33,6 +34,9 @@ abstract class AudioService {
   Future<void> setGain(double gainDb);
   Future<void> setFrequencyRange(double minMidiNote, double maxMidiNote);
   Future<bool> isPlaying();
+  Stream<bool> get onHeadphoneConnectionChanged;
+  Stream<bool> get onPlaybackStateChanged;
+  Future<bool> isHeadphoneConnected();
   void dispose();
 }
 
@@ -42,6 +46,32 @@ class MobileAudioService implements AudioService {
   );
 
   bool _isPlaying = false;
+  final _headphoneConnectionController = StreamController<bool>.broadcast();
+  final _playbackStateController = StreamController<bool>.broadcast();
+
+  MobileAudioService() {
+    _platform.setMethodCallHandler(_handleMethodCall);
+  }
+
+  Future<void> _handleMethodCall(MethodCall call) async {
+    switch (call.method) {
+      case 'onHeadphoneConnectionChanged':
+        _headphoneConnectionController.add(call.arguments as bool);
+        break;
+      case 'onPlaybackStateChanged':
+        final isPlaying = call.arguments as bool;
+        _isPlaying = isPlaying;
+        _playbackStateController.add(isPlaying);
+        break;
+    }
+  }
+
+  @override
+  Stream<bool> get onHeadphoneConnectionChanged =>
+      _headphoneConnectionController.stream;
+
+  @override
+  Stream<bool> get onPlaybackStateChanged => _playbackStateController.stream;
 
   @override
   Future<void> init() async {
@@ -100,8 +130,21 @@ class MobileAudioService implements AudioService {
   Future<bool> isPlaying() async => _isPlaying;
 
   @override
+  Future<bool> isHeadphoneConnected() async {
+    try {
+      final bool? isConnected = await _platform.invokeMethod(
+        'getHeadphoneState',
+      );
+      return isConnected ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  @override
   void dispose() {
-    // For mobile, the service lifecycle is handled by the OS
+    _headphoneConnectionController.close();
+    _playbackStateController.close();
   }
 }
 
@@ -115,6 +158,8 @@ class DesktopAudioService implements AudioService {
 
   Pointer? _playerPtr;
   bool _isPlaying = false;
+  final _headphoneConnectionController = StreamController<bool>.broadcast();
+  final _playbackStateController = StreamController<bool>.broadcast();
 
   DesktopAudioService() {
     try {
@@ -155,6 +200,7 @@ class DesktopAudioService implements AudioService {
     if (_playerPtr != null) {
       _startAudioPlayer(_playerPtr!);
       _isPlaying = true;
+      _playbackStateController.add(true);
     }
   }
 
@@ -163,6 +209,7 @@ class DesktopAudioService implements AudioService {
     if (_playerPtr != null) {
       _stopAudioPlayer(_playerPtr!);
       _isPlaying = false;
+      _playbackStateController.add(false);
     }
   }
 
@@ -184,10 +231,25 @@ class DesktopAudioService implements AudioService {
   Future<bool> isPlaying() async => _isPlaying;
 
   @override
+  Stream<bool> get onHeadphoneConnectionChanged =>
+      _headphoneConnectionController.stream;
+
+  @override
+  Stream<bool> get onPlaybackStateChanged => _playbackStateController.stream;
+
+  @override
+  Future<bool> isHeadphoneConnected() async {
+    // Desktop implementation doesn't check for headphones yet
+    return true;
+  }
+
+  @override
   void dispose() {
     if (_playerPtr != null) {
       _destroyAudioPlayer(_playerPtr!);
       _playerPtr = null;
     }
+    _headphoneConnectionController.close();
+    _playbackStateController.close();
   }
 }
