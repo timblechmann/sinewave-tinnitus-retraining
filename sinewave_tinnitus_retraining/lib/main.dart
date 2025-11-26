@@ -4,6 +4,7 @@ import 'audio_service.dart';
 import 'audio_utils.dart';
 import 'platform_utils.dart';
 import 'settings_service.dart';
+import 'settings_controller.dart';
 import 'tray_manager.dart';
 import 'window_manager_wrapper.dart';
 
@@ -94,12 +95,10 @@ class _HomeScreenState extends State<HomeScreen> {
   late final AppTrayManager _trayManager;
   late final WindowManagerWrapper _windowManagerWrapper;
   late final SettingsService _settingsService;
+  late final SettingsController _settingsController;
 
   bool _isPlaying = false;
   bool _isHeadphoneConnected = false;
-  double _gainDb = -12.0;
-  double _minMidiNote = 69.0; // A4 = 440 Hz
-  double _maxMidiNote = 115.0; // Around 8000 Hz
 
   // Drag state for incremental sliders
   bool _isDragging = false;
@@ -112,6 +111,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _audioService = AudioService();
     _settingsService = SettingsService();
+    _settingsController = SettingsController(_settingsService, _audioService);
 
     if (PlatformUtils.isDesktop) {
       _windowManagerWrapper = WindowManagerWrapper(
@@ -128,9 +128,10 @@ class _HomeScreenState extends State<HomeScreen> {
         try {
           await _windowManagerWrapper.init();
           await _trayManager.init();
-          await _loadSettings();
+          await _settingsController.init();
           await _audioService.init();
           await _getInitialPlaybackState();
+          _setupAudioServiceListeners();
         } catch (e) {
           _showErrorSnackBar('Initialization failed: $e');
         }
@@ -138,7 +139,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       Future.microtask(() async {
         try {
-          await _loadSettings();
+          await _settingsController.init();
           await _audioService.init();
           await _getInitialPlaybackState();
           _setupAudioServiceListeners();
@@ -185,20 +186,12 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _audioService.dispose();
+    _settingsController.dispose();
     if (PlatformUtils.isDesktop) {
       _trayManager.dispose();
       _windowManagerWrapper.dispose();
     }
     super.dispose();
-  }
-
-  Future<void> _loadSettings() async {
-    final settings = await _settingsService.loadAllSettings();
-    setState(() {
-      _gainDb = settings['volume']!;
-      _minMidiNote = AudioUtils.frequencyToMidiNote(settings['minFrequency']!);
-      _maxMidiNote = AudioUtils.frequencyToMidiNote(settings['maxFrequency']!);
-    });
   }
 
   Future<void> _getInitialPlaybackState() async {
@@ -216,42 +209,6 @@ class _HomeScreenState extends State<HomeScreen> {
         SnackBar(content: Text(message), backgroundColor: Colors.red),
       );
     }
-  }
-
-  Future<void> _setGain(double gain) async {
-    try {
-      await _audioService.setGain(gain);
-      await _settingsService.setVolume(gain);
-    } catch (e) {
-      _showErrorSnackBar('Failed to set gain: $e');
-    }
-  }
-
-  Future<void> _setFrequencyRange(
-    double minMidiNote,
-    double maxMidiNote,
-  ) async {
-    try {
-      setState(() {
-        _minMidiNote = minMidiNote;
-        _maxMidiNote = maxMidiNote;
-      });
-      final minFrequency = AudioUtils.midiNoteToFrequency(minMidiNote);
-      final maxFrequency = AudioUtils.midiNoteToFrequency(maxMidiNote);
-      await _settingsService.setMinFrequency(minFrequency);
-      await _settingsService.setMaxFrequency(maxFrequency);
-      await _audioService.setFrequencyRange(minMidiNote, maxMidiNote);
-    } catch (e) {
-      _showErrorSnackBar('Failed to set frequency range: $e');
-    }
-  }
-
-  Future<void> _setMinMidiNote(double midiNote) async {
-    await _setFrequencyRange(midiNote, _maxMidiNote);
-  }
-
-  Future<void> _setMaxMidiNote(double midiNote) async {
-    await _setFrequencyRange(_minMidiNote, midiNote);
   }
 
   Widget _buildFrequencySlider(double value, Function(double) onValueChanged) {
@@ -308,6 +265,44 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildChannelControls({
+    required String title,
+    required ChannelSettings settings,
+    required Function(ChannelSettings) onUpdate,
+  }) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(title, style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 10),
+          Text(
+            'Min Freq: ${AudioUtils.midiNoteToFrequency(settings.minFrequency).toStringAsFixed(0)} Hz',
+          ),
+          _buildFrequencySlider(settings.minFrequency, (val) {
+            onUpdate(settings.copyWith(minFrequency: val));
+          }),
+          Text(
+            'Max Freq: ${AudioUtils.midiNoteToFrequency(settings.maxFrequency).toStringAsFixed(0)} Hz',
+          ),
+          _buildFrequencySlider(settings.maxFrequency, (val) {
+            onUpdate(settings.copyWith(maxFrequency: val));
+          }),
+          Text('Gain: ${settings.volume.toStringAsFixed(1)} dB'),
+          Slider(
+            value: AudioUtils.dbToSlider(settings.volume),
+            min: 0.0,
+            max: 1.0,
+            label: settings.volume.round().toString(),
+            onChanged: (double value) {
+              final db = AudioUtils.sliderToDb(value);
+              onUpdate(settings.copyWith(volume: db));
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _startTherapy() async {
     try {
       await _audioService.start();
@@ -330,88 +325,86 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Center(child: const Text('Sinewave Tinnitus Retraining')),
+        title: const Center(child: Text('Sinewave Tinnitus Retraining')),
       ),
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: buildContent,
+        child: ValueListenableBuilder<AppSettings>(
+          valueListenable: _settingsController.settings,
+          builder: (context, settings, child) {
+            return SingleChildScrollView(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _buildChannelControls(
+                        title: 'Left Channel',
+                        settings: settings.leftChannel,
+                        onUpdate: _settingsController.updateLeftChannel,
+                      ),
+                      const VerticalDivider(width: 1, thickness: 1),
+                      _buildChannelControls(
+                        title: 'Right Channel',
+                        settings: settings.rightChannel,
+                        onUpdate: _settingsController.updateRightChannel,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        _isHeadphoneConnected
+                            ? Icons.headset
+                            : Icons.headset_off,
+                        color: _isHeadphoneConnected
+                            ? Colors.green
+                            : Colors.grey,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _isHeadphoneConnected
+                            ? 'Headphones Connected'
+                            : 'No Headphones',
+                        style: TextStyle(
+                          color: _isHeadphoneConnected
+                              ? Colors.green
+                              : Colors.grey,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton(
+                    onPressed: _isPlaying ? _stopTherapy : _startTherapy,
+                    style: ElevatedButton.styleFrom(enableFeedback: false),
+                    child: Text(_isPlaying ? 'Stop Therapy' : 'Start Therapy'),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    _isPlaying
+                        ? 'Therapy is playing'
+                        : (!_isHeadphoneConnected
+                              ? 'Waiting for headphones...'
+                              : 'Therapy is stopped'),
+                    style: TextStyle(
+                      color: _isPlaying
+                          ? Colors.green
+                          : (!_isHeadphoneConnected
+                                ? Colors.orange
+                                : Colors.red),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
-  }
-
-  List<Widget> get buildContent {
-    String statusText;
-    Color statusColor;
-
-    if (_isPlaying) {
-      statusText = 'Therapy is playing';
-      statusColor = Colors.green;
-    } else if (!_isHeadphoneConnected) {
-      statusText = 'Waiting for headphones...';
-      statusColor = Colors.orange;
-    } else {
-      statusText = 'Therapy is stopped';
-      statusColor = Colors.red;
-    }
-
-    return [
-      Center(
-        child: Text(
-          'Min Frequency: ${AudioUtils.midiNoteToFrequency(_minMidiNote).toStringAsFixed(0)} Hz',
-        ),
-      ),
-      _buildFrequencySlider(_minMidiNote, _setMinMidiNote),
-      Center(
-        child: Text(
-          'Max Frequency: ${AudioUtils.midiNoteToFrequency(_maxMidiNote).toStringAsFixed(0)} Hz',
-        ),
-      ),
-      _buildFrequencySlider(_maxMidiNote, _setMaxMidiNote),
-      Center(child: Text('Gain: ${_gainDb.toStringAsFixed(1)} dB')),
-      Slider(
-        value: AudioUtils.dbToSlider(_gainDb),
-        min: 0.0,
-        max: 1.0,
-        label: _gainDb.round().toString(),
-        onChanged: (double value) {
-          final db = AudioUtils.sliderToDb(value);
-          setState(() {
-            _gainDb = db;
-          });
-          _setGain(db);
-        },
-      ),
-      const SizedBox(height: 20),
-      Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            _isHeadphoneConnected ? Icons.headset : Icons.headset_off,
-            color: _isHeadphoneConnected ? Colors.green : Colors.grey,
-          ),
-          const SizedBox(width: 8),
-          Text(
-            _isHeadphoneConnected ? 'Headphones Connected' : 'No Headphones',
-            style: TextStyle(
-              color: _isHeadphoneConnected ? Colors.green : Colors.grey,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ],
-      ),
-      const SizedBox(height: 20),
-      ElevatedButton(
-        onPressed: _isPlaying ? _stopTherapy : _startTherapy,
-        style: ElevatedButton.styleFrom(enableFeedback: false),
-        child: Text(_isPlaying ? 'Stop Therapy' : 'Start Therapy'),
-      ),
-      const SizedBox(height: 20),
-      Text(
-        statusText,
-        style: TextStyle(color: statusColor, fontWeight: FontWeight.bold),
-      ),
-    ];
   }
 }
